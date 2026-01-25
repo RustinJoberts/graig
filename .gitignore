@@ -1,5 +1,12 @@
 .env
 .venv
 
-# python cache
+# Python cache
 __pycache__
+*.pyc
+
+# pytest
+.pytest_cache/
+
+# Generated files
+*.png
