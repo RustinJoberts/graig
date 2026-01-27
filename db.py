@@ -64,7 +64,10 @@ async def end_voice_session(user_id: str, guild_id: str) -> None:
         sort=[("joined_at", -1)],
     )
     if session:
-        duration = int((now - session["joined_at"]).total_seconds())
+        joined_at = session["joined_at"]
+        if joined_at.tzinfo is None:
+            joined_at = joined_at.replace(tzinfo=timezone.utc)
+        duration = int((now - joined_at).total_seconds())
         await db.voice_sessions.update_one(
             {"_id": session["_id"]},
             {"$set": {"left_at": now, "duration_seconds": duration}},

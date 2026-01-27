@@ -1,3 +1,5 @@
+from typing import Literal
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -15,6 +17,7 @@ from db import (
     start_voice_session,
     upsert_user,
 )
+from meme import build_meme_url, get_meme_templates, get_random_meme, search_templates
 from utils import extract_emojis, format_duration
 
 intents = discord.Intents.default()
@@ -98,6 +101,111 @@ async def stats(interaction: discord.Interaction, user: discord.Member | None = 
         embed.set_footer(text="No activity recorded yet")
 
     await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="meme", description="Generate a custom meme")
+@app_commands.describe(
+    template="The meme template to use (e.g., drake, distracted-boyfriend)",
+    top_text="Text for the top of the meme",
+    bottom_text="Text for the bottom of the meme (optional)",
+)
+async def meme(
+    interaction: discord.Interaction,
+    template: str,
+    top_text: str,
+    bottom_text: str = "",
+):
+    """Generate a custom meme using Memegen."""
+    meme_url = build_meme_url(template, top_text, bottom_text)
+
+    embed = discord.Embed(color=discord.Color.green())
+    embed.set_image(url=meme_url)
+    embed.set_footer(text=f"Template: {template}")
+
+    await interaction.response.send_message(embed=embed)
+
+
+@meme.autocomplete("template")
+async def meme_template_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for meme template names."""
+    if current:
+        templates = await search_templates(current)
+    else:
+        templates = await get_meme_templates()
+
+    # Return up to 25 choices (Discord limit)
+    return [
+        app_commands.Choice(name=t["name"][:100], value=t["id"])
+        for t in templates[:25]
+    ]
+
+
+@bot.tree.command(name="randommeme", description="Get a random meme from Reddit")
+@app_commands.describe(subreddit="Subreddit to fetch from (optional)")
+async def randommeme(
+    interaction: discord.Interaction,
+    subreddit: Literal["memes", "dankmemes", "me_irl", "wholesomememes"] | None = None,
+):
+    """Fetch a random meme from Reddit via Meme API."""
+    await interaction.response.defer()
+
+    meme_data = await get_random_meme(subreddit)
+
+    if not meme_data:
+        await interaction.followup.send(
+            "Failed to fetch a meme. Please try again later.", ephemeral=True
+        )
+        return
+
+    embed = discord.Embed(
+        title=meme_data.get("title", "Random Meme"),
+        url=meme_data.get("postLink"),
+        color=discord.Color.orange(),
+    )
+    embed.set_image(url=meme_data.get("url"))
+    embed.set_footer(
+        text=f"r/{meme_data.get('subreddit')} | u/{meme_data.get('author')}"
+    )
+
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="memetemplates", description="List available meme templates")
+@app_commands.describe(search="Search for templates by name (optional)")
+async def memetemplates(interaction: discord.Interaction, search: str | None = None):
+    """List or search available meme templates."""
+    await interaction.response.defer()
+
+    if search:
+        templates = await search_templates(search)
+    else:
+        templates = await get_meme_templates()
+
+    if not templates:
+        await interaction.followup.send(
+            "No templates found." if search else "Failed to fetch templates.",
+            ephemeral=True,
+        )
+        return
+
+    # Format templates list (show first 20)
+    template_list = "\n".join(
+        f"**{t['name']}** (`{t['id']}`)" for t in templates[:20]
+    )
+
+    total = len(templates)
+    shown = min(20, total)
+
+    embed = discord.Embed(
+        title="Meme Templates" + (f" matching '{search}'" if search else ""),
+        description=template_list,
+        color=discord.Color.blue(),
+    )
+    embed.set_footer(text=f"Showing {shown} of {total} templates")
+
+    await interaction.followup.send(embed=embed)
 
 
 @bot.event

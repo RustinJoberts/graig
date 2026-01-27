@@ -8,6 +8,7 @@ A Discord bot that tracks server activity and provides users with fun statistics
 - **Message Tracking**: Records messages sent and extracts emoji usage from message content.
 - **Reaction Tracking**: Tracks reactions added and removed, including favorite emojis.
 - **User Stats Command**: `/stats` slash command displays a visual summary of a user's activity.
+- **Meme Generation**: Create custom memes using popular templates or fetch random memes from Reddit.
 
 ## Requirements
 
@@ -56,6 +57,9 @@ A Discord bot that tracks server activity and provides users with fun statistics
 |---------|-------------|
 | `/stats` | View your activity stats in the server |
 | `/stats @user` | View another user's activity stats |
+| `/meme <template> <top_text> [bottom_text]` | Generate a custom meme using a template |
+| `/randommeme [subreddit]` | Fetch a random meme from Reddit |
+| `/memetemplates [search]` | List or search available meme templates |
 
 ## Project Structure
 
@@ -64,10 +68,12 @@ graig/
 ├── main.py          # Bot entry point, event handlers, slash commands
 ├── config.py        # Configuration management (pydantic-settings)
 ├── db.py            # MongoDB operations (motor async driver)
+├── meme.py          # Meme generation API helpers (Memegen, Meme_Api)
 ├── utils.py         # Helper functions (emoji extraction, formatting)
 ├── tests/           # Test suite
 │   ├── conftest.py  # Mock MongoDB fixtures
 │   ├── test_db.py   # Database function tests
+│   ├── test_meme.py # Meme function tests
 │   └── test_utils.py# Utility function tests
 └── pyproject.toml   # Project configuration
 ```
