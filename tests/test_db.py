@@ -5,6 +5,7 @@ import pytest
 from db import (
     end_voice_session,
     get_first_activity,
+    get_guild_leaderboards,
     get_message_stats,
     get_reaction_stats,
     get_voice_stats,
@@ -312,3 +313,221 @@ class TestGetFirstActivity:
 
         result = await get_first_activity(sample_user_id, sample_guild_id)
         assert result == message_time
+
+
+class TestGetGuildLeaderboards:
+    async def test_returns_empty_lists_for_no_data(self, mock_db, sample_guild_id):
+        result = await get_guild_leaderboards(sample_guild_id)
+
+        assert result["voice_time"] == []
+        assert result["messages"] == []
+        assert result["emojis"] == []
+        assert result["reactions"] == []
+
+    async def test_voice_time_leaderboard(self, mock_db, sample_guild_id):
+        # Add users
+        mock_db.users.documents.append({"_id": "user1", "username": "Alice"})
+        mock_db.users.documents.append({"_id": "user2", "username": "Bob"})
+
+        # Add voice sessions
+        mock_db.voice_sessions.documents.extend([
+            {
+                "user_id": "user1",
+                "guild_id": sample_guild_id,
+                "duration_seconds": 3600,
+                "left_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+            },
+            {
+                "user_id": "user1",
+                "guild_id": sample_guild_id,
+                "duration_seconds": 1800,
+                "left_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+            },
+            {
+                "user_id": "user2",
+                "guild_id": sample_guild_id,
+                "duration_seconds": 7200,
+                "left_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+            },
+        ])
+
+        result = await get_guild_leaderboards(sample_guild_id)
+
+        # Bob should be first with 7200 seconds, Alice second with 5400
+        assert len(result["voice_time"]) == 2
+        assert result["voice_time"][0][0] == "user2"  # user_id
+        assert result["voice_time"][0][1] == "Bob"  # username
+        assert result["voice_time"][0][2] == 7200  # total_seconds
+        assert result["voice_time"][1][0] == "user1"
+        assert result["voice_time"][1][2] == 5400
+
+    async def test_messages_leaderboard(self, mock_db, sample_guild_id):
+        # Add users
+        mock_db.users.documents.append({"_id": "user1", "username": "Alice"})
+        mock_db.users.documents.append({"_id": "user2", "username": "Bob"})
+
+        # Add messages
+        for _ in range(5):
+            mock_db.messages.documents.append({
+                "user_id": "user1",
+                "guild_id": sample_guild_id,
+                "emojis": [],
+                "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+            })
+        for _ in range(10):
+            mock_db.messages.documents.append({
+                "user_id": "user2",
+                "guild_id": sample_guild_id,
+                "emojis": [],
+                "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+            })
+
+        result = await get_guild_leaderboards(sample_guild_id)
+
+        # Bob should be first with 10 messages, Alice second with 5
+        assert len(result["messages"]) == 2
+        assert result["messages"][0][0] == "user2"
+        assert result["messages"][0][2] == 10
+        assert result["messages"][1][0] == "user1"
+        assert result["messages"][1][2] == 5
+
+    async def test_emojis_leaderboard(self, mock_db, sample_guild_id):
+        # Add users
+        mock_db.users.documents.append({"_id": "user1", "username": "Alice"})
+        mock_db.users.documents.append({"_id": "user2", "username": "Bob"})
+
+        # Add messages with emojis
+        mock_db.messages.documents.append({
+            "user_id": "user1",
+            "guild_id": sample_guild_id,
+            "emojis": ["😀", "👍", "❤️"],
+            "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+        })
+        mock_db.messages.documents.append({
+            "user_id": "user2",
+            "guild_id": sample_guild_id,
+            "emojis": ["😀"],
+            "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+        })
+
+        result = await get_guild_leaderboards(sample_guild_id)
+
+        # Alice should be first with 3 emojis, Bob second with 1
+        assert len(result["emojis"]) == 2
+        assert result["emojis"][0][0] == "user1"
+        assert result["emojis"][0][2] == 3
+        assert result["emojis"][1][0] == "user2"
+        assert result["emojis"][1][2] == 1
+
+    async def test_reactions_leaderboard(self, mock_db, sample_guild_id):
+        # Add users
+        mock_db.users.documents.append({"_id": "user1", "username": "Alice"})
+        mock_db.users.documents.append({"_id": "user2", "username": "Bob"})
+
+        # Add reactions
+        for _ in range(3):
+            mock_db.reactions.documents.append({
+                "user_id": "user1",
+                "guild_id": sample_guild_id,
+                "emoji": "👍",
+                "action": "add",
+                "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+            })
+        for _ in range(7):
+            mock_db.reactions.documents.append({
+                "user_id": "user2",
+                "guild_id": sample_guild_id,
+                "emoji": "❤️",
+                "action": "add",
+                "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+            })
+        # Remove actions should not be counted
+        mock_db.reactions.documents.append({
+            "user_id": "user1",
+            "guild_id": sample_guild_id,
+            "emoji": "👍",
+            "action": "remove",
+            "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+        })
+
+        result = await get_guild_leaderboards(sample_guild_id)
+
+        # Bob should be first with 7 reactions, Alice second with 3
+        assert len(result["reactions"]) == 2
+        assert result["reactions"][0][0] == "user2"
+        assert result["reactions"][0][2] == 7
+        assert result["reactions"][1][0] == "user1"
+        assert result["reactions"][1][2] == 3
+
+    async def test_limits_to_top_5(self, mock_db, sample_guild_id):
+        # Add 7 users
+        for i in range(7):
+            mock_db.users.documents.append({"_id": f"user{i}", "username": f"User{i}"})
+            mock_db.messages.documents.append({
+                "user_id": f"user{i}",
+                "guild_id": sample_guild_id,
+                "emojis": [],
+                "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+            })
+
+        result = await get_guild_leaderboards(sample_guild_id)
+
+        assert len(result["messages"]) == 5
+
+    async def test_date_filtering(self, mock_db, sample_guild_id):
+        # Add users
+        mock_db.users.documents.append({"_id": "user1", "username": "Alice"})
+
+        # Add messages at different dates
+        mock_db.messages.documents.append({
+            "user_id": "user1",
+            "guild_id": sample_guild_id,
+            "emojis": [],
+            "created_at": datetime(2024, 1, 10, tzinfo=timezone.utc),
+        })
+        mock_db.messages.documents.append({
+            "user_id": "user1",
+            "guild_id": sample_guild_id,
+            "emojis": [],
+            "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+        })
+        mock_db.messages.documents.append({
+            "user_id": "user1",
+            "guild_id": sample_guild_id,
+            "emojis": [],
+            "created_at": datetime(2024, 1, 20, tzinfo=timezone.utc),
+        })
+
+        # Filter to only include Jan 12-18
+        start_date = datetime(2024, 1, 12, tzinfo=timezone.utc)
+        end_date = datetime(2024, 1, 18, tzinfo=timezone.utc)
+
+        result = await get_guild_leaderboards(sample_guild_id, start_date, end_date)
+
+        # Only 1 message should be in range
+        assert len(result["messages"]) == 1
+        assert result["messages"][0][2] == 1
+
+    async def test_ignores_other_guilds(self, mock_db, sample_guild_id):
+        # Add users
+        mock_db.users.documents.append({"_id": "user1", "username": "Alice"})
+
+        # Add messages to different guilds
+        mock_db.messages.documents.append({
+            "user_id": "user1",
+            "guild_id": sample_guild_id,
+            "emojis": [],
+            "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+        })
+        mock_db.messages.documents.append({
+            "user_id": "user1",
+            "guild_id": "other_guild",
+            "emojis": [],
+            "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+        })
+
+        result = await get_guild_leaderboards(sample_guild_id)
+
+        # Only 1 message from the target guild
+        assert len(result["messages"]) == 1
+        assert result["messages"][0][2] == 1

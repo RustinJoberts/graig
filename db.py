@@ -208,6 +208,163 @@ async def get_reaction_stats(user_id: str, guild_id: str) -> dict:
     }
 
 
+async def get_guild_leaderboards(
+    guild_id: str,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+) -> dict:
+    """Get leaderboard stats for all users in a guild within a date range.
+
+    Returns top 5 users per category:
+    - voice_time: [(user_id, username, total_seconds), ...]
+    - messages: [(user_id, username, message_count), ...]
+    - emojis: [(user_id, username, emoji_count), ...]
+    - reactions: [(user_id, username, reaction_count), ...]
+    """
+    # Build date filter
+    date_filter = {}
+    if start_date:
+        date_filter["$gte"] = start_date
+    if end_date:
+        date_filter["$lte"] = end_date
+
+    # Voice time leaderboard
+    voice_match = {"guild_id": guild_id, "duration_seconds": {"$ne": None}}
+    if date_filter:
+        voice_match["left_at"] = date_filter
+
+    voice_pipeline = [
+        {"$match": voice_match},
+        {"$group": {"_id": "$user_id", "total_seconds": {"$sum": "$duration_seconds"}}},
+        {"$sort": {"total_seconds": -1}},
+        {"$limit": 5},
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "_id",
+                "foreignField": "_id",
+                "as": "user_info",
+            }
+        },
+        {
+            "$project": {
+                "user_id": "$_id",
+                "total_seconds": 1,
+                "username": {"$arrayElemAt": ["$user_info.username", 0]},
+            }
+        },
+    ]
+    voice_results = await db.voice_sessions.aggregate(voice_pipeline).to_list(5)
+    voice_time = [
+        (r["user_id"], r.get("username", "Unknown"), r["total_seconds"])
+        for r in voice_results
+    ]
+
+    # Messages leaderboard
+    messages_match = {"guild_id": guild_id}
+    if date_filter:
+        messages_match["created_at"] = date_filter
+
+    messages_pipeline = [
+        {"$match": messages_match},
+        {"$group": {"_id": "$user_id", "message_count": {"$sum": 1}}},
+        {"$sort": {"message_count": -1}},
+        {"$limit": 5},
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "_id",
+                "foreignField": "_id",
+                "as": "user_info",
+            }
+        },
+        {
+            "$project": {
+                "user_id": "$_id",
+                "message_count": 1,
+                "username": {"$arrayElemAt": ["$user_info.username", 0]},
+            }
+        },
+    ]
+    messages_results = await db.messages.aggregate(messages_pipeline).to_list(5)
+    messages = [
+        (r["user_id"], r.get("username", "Unknown"), r["message_count"])
+        for r in messages_results
+    ]
+
+    # Emojis leaderboard (total emoji count from messages)
+    emojis_match = {"guild_id": guild_id, "emojis.0": {"$exists": True}}
+    if date_filter:
+        emojis_match["created_at"] = date_filter
+
+    emojis_pipeline = [
+        {"$match": emojis_match},
+        {"$unwind": "$emojis"},
+        {"$group": {"_id": "$user_id", "emoji_count": {"$sum": 1}}},
+        {"$sort": {"emoji_count": -1}},
+        {"$limit": 5},
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "_id",
+                "foreignField": "_id",
+                "as": "user_info",
+            }
+        },
+        {
+            "$project": {
+                "user_id": "$_id",
+                "emoji_count": 1,
+                "username": {"$arrayElemAt": ["$user_info.username", 0]},
+            }
+        },
+    ]
+    emojis_results = await db.messages.aggregate(emojis_pipeline).to_list(5)
+    emojis = [
+        (r["user_id"], r.get("username", "Unknown"), r["emoji_count"])
+        for r in emojis_results
+    ]
+
+    # Reactions leaderboard (reactions given/added)
+    reactions_match = {"guild_id": guild_id, "action": "add"}
+    if date_filter:
+        reactions_match["created_at"] = date_filter
+
+    reactions_pipeline = [
+        {"$match": reactions_match},
+        {"$group": {"_id": "$user_id", "reaction_count": {"$sum": 1}}},
+        {"$sort": {"reaction_count": -1}},
+        {"$limit": 5},
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "_id",
+                "foreignField": "_id",
+                "as": "user_info",
+            }
+        },
+        {
+            "$project": {
+                "user_id": "$_id",
+                "reaction_count": 1,
+                "username": {"$arrayElemAt": ["$user_info.username", 0]},
+            }
+        },
+    ]
+    reactions_results = await db.reactions.aggregate(reactions_pipeline).to_list(5)
+    reactions = [
+        (r["user_id"], r.get("username", "Unknown"), r["reaction_count"])
+        for r in reactions_results
+    ]
+
+    return {
+        "voice_time": voice_time,
+        "messages": messages,
+        "emojis": emojis,
+        "reactions": reactions,
+    }
+
+
 async def get_first_activity(user_id: str, guild_id: str) -> datetime | None:
     """Get the earliest recorded activity for a user in a guild."""
     dates = []

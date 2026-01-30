@@ -10,6 +10,7 @@ class MockCollection:
     def __init__(self):
         self.documents = []
         self._id_counter = 0
+        self._all_collections = None
 
     async def insert_one(self, document):
         self._id_counter += 1
@@ -44,7 +45,7 @@ class MockCollection:
         return len(self._filter(filter_query))
 
     def aggregate(self, pipeline):
-        return MockCursor(self._run_aggregate(pipeline))
+        return MockCursor(self._run_aggregate(pipeline, self._all_collections))
 
     async def create_index(self, keys):
         pass  # No-op for testing
@@ -69,7 +70,7 @@ class MockCollection:
                 results.append(doc)
         return results
 
-    def _run_aggregate(self, pipeline):
+    def _run_aggregate(self, pipeline, all_collections=None):
         results = list(self.documents)
 
         for stage in pipeline:
@@ -90,7 +91,69 @@ class MockCollection:
                     )
             elif "$limit" in stage:
                 results = results[: stage["$limit"]]
+            elif "$lookup" in stage:
+                results = self._lookup(results, stage["$lookup"], all_collections)
+            elif "$project" in stage:
+                results = self._project(results, stage["$project"])
 
+        return results
+
+    def _lookup(self, docs, lookup_spec, all_collections=None):
+        """Perform a $lookup join operation."""
+        from_coll = lookup_spec.get("from")
+        local_field = lookup_spec.get("localField")
+        foreign_field = lookup_spec.get("foreignField")
+        as_field = lookup_spec.get("as")
+
+        # Get the foreign collection from all_collections if available
+        foreign_docs = []
+        if all_collections and from_coll in all_collections:
+            foreign_docs = all_collections[from_coll].documents
+
+        results = []
+        for doc in docs:
+            local_value = doc.get(local_field)
+            matches = [
+                fdoc for fdoc in foreign_docs
+                if fdoc.get(foreign_field) == local_value
+            ]
+            new_doc = {**doc, as_field: matches}
+            results.append(new_doc)
+        return results
+
+    def _project(self, docs, project_spec):
+        """Perform a $project operation."""
+        results = []
+        for doc in docs:
+            new_doc = {}
+            for field, value in project_spec.items():
+                if value == 1:
+                    if field in doc:
+                        new_doc[field] = doc[field]
+                elif isinstance(value, str) and value.startswith("$"):
+                    # Direct field reference
+                    source_field = value[1:]
+                    new_doc[field] = doc.get(source_field)
+                elif isinstance(value, dict) and "$arrayElemAt" in value:
+                    # Handle $arrayElemAt
+                    arr_spec = value["$arrayElemAt"]
+                    arr_field = arr_spec[0].lstrip("$")
+                    arr_index = arr_spec[1]
+                    # Handle nested path like "user_info.username"
+                    parts = arr_field.split(".")
+                    arr = doc.get(parts[0], [])
+                    if arr and len(arr) > arr_index:
+                        elem = arr[arr_index]
+                        if len(parts) > 1:
+                            new_doc[field] = elem.get(parts[1])
+                        else:
+                            new_doc[field] = elem
+                    else:
+                        new_doc[field] = None
+            # Always include _id unless explicitly excluded
+            if "_id" not in project_spec and "_id" in doc:
+                new_doc["_id"] = doc["_id"]
+            results.append(new_doc)
         return results
 
     def _get_nested_value(self, doc, key):
@@ -137,8 +200,9 @@ class MockCollection:
     def _matches_filter(self, doc, filter_query):
         for key, value in filter_query.items():
             if isinstance(value, dict):
+                doc_value = self._get_nested_value(doc, key)
                 for op, op_value in value.items():
-                    if op == "$ne" and self._get_nested_value(doc, key) == op_value:
+                    if op == "$ne" and doc_value == op_value:
                         return False
                     elif op == "$exists":
                         has_key = self._has_nested_key(doc, key)
@@ -146,6 +210,10 @@ class MockCollection:
                             return False
                         if not op_value and has_key:
                             return False
+                    elif op == "$gte" and (doc_value is None or doc_value < op_value):
+                        return False
+                    elif op == "$lte" and (doc_value is None or doc_value > op_value):
+                        return False
             elif self._get_nested_value(doc, key) != value:
                 return False
         return True
@@ -218,6 +286,17 @@ class MockDatabase:
         self.voice_sessions = MockCollection()
         self.messages = MockCollection()
         self.reactions = MockCollection()
+        # Link collections to each other for $lookup support
+        all_collections = {
+            "users": self.users,
+            "voice_sessions": self.voice_sessions,
+            "messages": self.messages,
+            "reactions": self.reactions,
+        }
+        self.users._all_collections = all_collections
+        self.voice_sessions._all_collections = all_collections
+        self.messages._all_collections = all_collections
+        self.reactions._all_collections = all_collections
 
 
 @pytest.fixture

@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 import discord
@@ -8,6 +9,7 @@ from config import settings
 from db import (
     end_voice_session,
     get_first_activity,
+    get_guild_leaderboards,
     get_message_stats,
     get_reaction_stats,
     get_voice_stats,
@@ -101,6 +103,156 @@ async def stats(interaction: discord.Interaction, user: discord.Member | None = 
         embed.set_footer(text="No activity recorded yet")
 
     await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="leaderboard", description="View server activity leaderboards")
+@app_commands.describe(
+    period="Time period to show stats for (default: 7d)",
+    start_date="Custom start date (YYYY-MM-DD format)",
+    end_date="Custom end date (YYYY-MM-DD format)",
+    guild_id="Guild ID (required for DM usage by admins)",
+)
+async def leaderboard(
+    interaction: discord.Interaction,
+    period: Literal["1d", "7d", "30d", "all"] | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    guild_id: str | None = None,
+):
+    """Display activity leaderboards for the server."""
+    user_id = str(interaction.user.id)
+    is_admin = user_id in settings.admin_ids
+
+    # Handle DM vs guild context
+    if interaction.guild_id:
+        # In a guild - use guild context (ignore guild_id param)
+        target_guild_id = str(interaction.guild_id)
+        guild_name = interaction.guild.name if interaction.guild else "this server"
+    elif is_admin and guild_id:
+        # Admin in DM with guild_id specified
+        target_guild_id = guild_id
+        # Try to get guild name from bot's cache
+        guild_obj = bot.get_guild(int(guild_id))
+        guild_name = guild_obj.name if guild_obj else f"Guild {guild_id}"
+    elif is_admin:
+        await interaction.response.send_message(
+            "Please provide a `guild_id` when using this command in DMs.",
+            ephemeral=True,
+        )
+        return
+    else:
+        await interaction.response.send_message(
+            "This command can only be used in a server.", ephemeral=True
+        )
+        return
+
+    now = datetime.now(timezone.utc)
+
+    # Parse custom date range or use preset period
+    start_dt: datetime | None = None
+    end_dt: datetime | None = None
+    period_label = ""
+
+    if start_date or end_date:
+        # Custom date range
+        try:
+            if start_date:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
+            if end_date:
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(
+                    hour=23, minute=59, second=59, tzinfo=timezone.utc
+                )
+        except ValueError:
+            await interaction.response.send_message(
+                "Invalid date format. Please use YYYY-MM-DD.", ephemeral=True
+            )
+            return
+
+        if start_dt and end_dt:
+            period_label = f"{start_dt.strftime('%b %d')} - {end_dt.strftime('%b %d, %Y')}"
+        elif start_dt:
+            period_label = f"Since {start_dt.strftime('%b %d, %Y')}"
+        else:
+            period_label = f"Until {end_dt.strftime('%b %d, %Y')}"
+    else:
+        # Use preset period (default to 7d)
+        selected_period = period or "7d"
+        if selected_period == "1d":
+            start_dt = now - timedelta(days=1)
+            period_label = "Last 24 Hours"
+        elif selected_period == "7d":
+            start_dt = now - timedelta(days=7)
+            period_label = "Last 7 Days"
+        elif selected_period == "30d":
+            start_dt = now - timedelta(days=30)
+            period_label = "Last 30 Days"
+        else:  # all
+            period_label = "All Time"
+
+    # Fetch leaderboard data
+    await interaction.response.defer()
+    data = await get_guild_leaderboards(target_guild_id, start_dt, end_dt)
+
+    # Check if there's any data
+    has_data = any([data["voice_time"], data["messages"], data["emojis"], data["reactions"]])
+
+    if not has_data:
+        await interaction.followup.send(
+            f"No activity data found for **{guild_name}** in the selected time period.",
+            ephemeral=True,
+        )
+        return
+
+    # Build embed
+    embed = discord.Embed(
+        title=f"Server Leaderboard ({period_label})",
+        description=f"Top activity in **{guild_name}**",
+        color=discord.Color.gold(),
+    )
+
+    # Voice time section
+    if data["voice_time"]:
+        voice_lines = []
+        for i, (user_id, username, total_seconds) in enumerate(data["voice_time"], 1):
+            voice_lines.append(f"{i}. <@{user_id}> — {format_duration(total_seconds)}")
+        embed.add_field(name="🎤 Voice Time", value="\n".join(voice_lines), inline=False)
+
+    # Messages section
+    if data["messages"]:
+        msg_lines = []
+        for i, (user_id, username, count) in enumerate(data["messages"], 1):
+            msg_lines.append(f"{i}. <@{user_id}> — {count:,}")
+        embed.add_field(name="💬 Messages Sent", value="\n".join(msg_lines), inline=False)
+
+    # Emojis section
+    if data["emojis"]:
+        emoji_lines = []
+        for i, (user_id, username, count) in enumerate(data["emojis"], 1):
+            emoji_lines.append(f"{i}. <@{user_id}> — {count:,}")
+        embed.add_field(name="😀 Emojis Used", value="\n".join(emoji_lines), inline=False)
+
+    # Reactions section
+    if data["reactions"]:
+        react_lines = []
+        for i, (user_id, username, count) in enumerate(data["reactions"], 1):
+            react_lines.append(f"{i}. <@{user_id}> — {count:,}")
+        embed.add_field(name="⭐ Reactions Given", value="\n".join(react_lines), inline=False)
+
+    # Footer with date range
+    if start_dt and end_dt:
+        footer_text = f"Data from {start_dt.strftime('%b %d')} - {end_dt.strftime('%b %d, %Y')}"
+    elif start_dt:
+        footer_text = f"Data from {start_dt.strftime('%b %d, %Y')} - {now.strftime('%b %d, %Y')}"
+    elif end_dt:
+        footer_text = f"Data until {end_dt.strftime('%b %d, %Y')}"
+    else:
+        footer_text = "All recorded data"
+
+    embed.set_footer(text=footer_text)
+
+    await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="meme", description="Generate a custom meme")
